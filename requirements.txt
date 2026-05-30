@@ -1,4 +1,6 @@
-boxsdk[jwt]
+# Pinned to the legacy 3.x SDK (imports as `boxsdk`, with JWTAuth/OAuth2/Client).
+# The 10.x line is the rewritten `box_sdk_gen` with an incompatible API.
+boxsdk[jwt]<4
 requests
 questionary
 rich
