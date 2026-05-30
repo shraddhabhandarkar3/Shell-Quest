@@ -1,1 +1,50 @@
-{"themes": []}
+{
+  "themes": [
+    {
+      "id": "ocean",
+      "name": "Deep Ocean Explorer",
+      "icon": "🌊",
+      "description": "Explore a marine research station",
+      "scrape_queries": [
+        {
+          "url": "https://en.wikipedia.org/wiki/Ocean",
+          "filename": "ocean_overview.txt"
+        },
+        {
+          "url": "https://en.wikipedia.org/wiki/Coral_reef",
+          "filename": "coral_reefs.txt"
+        },
+        {
+          "url": "https://en.wikipedia.org/wiki/Deep-sea_creature",
+          "filename": "deep_sea_creatures.txt"
+        }
+      ],
+      "story_level_1": "You've just arrived at the Deep Ocean Research Station. The previous researcher left in a hurry and the data files are a mess. Explore the station's file system and get things organized before the next expedition departs.",
+      "story_level_2": "The station is organized — nice work. Now the science team needs you to analyze the research data. Dig into the logs and files to find patterns and anomalies.",
+      "setting_name": "research station"
+    },
+    {
+      "id": "space",
+      "name": "Mars Mission Control",
+      "icon": "🚀",
+      "description": "Run a space mission control center",
+      "scrape_queries": [
+        {
+          "url": "https://en.wikipedia.org/wiki/Mars",
+          "filename": "mars_briefing.txt"
+        },
+        {
+          "url": "https://en.wikipedia.org/wiki/Exploration_of_Mars",
+          "filename": "mission_history.txt"
+        },
+        {
+          "url": "https://en.wikipedia.org/wiki/Exoplanet",
+          "filename": "exoplanet_catalog.txt"
+        }
+      ],
+      "story_level_1": "Mission Control, we have a situation. The last shift left the data archives in complete disarray — files are scattered, directories are missing, and the flight director is asking for a status report in an hour. Get the file system under control before the next comm window opens.",
+      "story_level_2": "Mission Control is operational again — good work. Houston now needs you to run analysis on the telemetry logs and mission data. Pull the numbers they need before the press briefing.",
+      "setting_name": "mission control"
+    }
+  ]
+}
