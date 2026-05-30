@@ -5,6 +5,8 @@ Validates whether a challenge has been solved. Level 1 uses state-based checks
 the player's most recent stdout). Implemented in TICKET-3.
 """
 
+import os
+
 
 def validate_challenge(
     validation: dict,
@@ -24,4 +26,67 @@ def validate_challenge(
     Returns:
         {"passed": bool, "message": str}
     """
-    raise NotImplementedError
+    vtype = validation["type"]
+    target = validation.get("target", "")
+    expected = validation.get("expected", "")
+
+    try:
+        # === STATE-BASED CHECKS (Level 1) ===
+        # Inspect the filesystem — don't care what command the player ran.
+
+        if vtype == "file_exists":
+            path = os.path.join(sandbox_path, target)
+            if os.path.exists(path):
+                return {"passed": True, "message": "File found!"}
+            return {"passed": False, "message": f"File not found at {target}"}
+
+        elif vtype == "file_not_exists":
+            path = os.path.join(sandbox_path, target)
+            if not os.path.exists(path):
+                return {"passed": True, "message": "File successfully removed!"}
+            return {"passed": False, "message": f"File still exists at {target}"}
+
+        elif vtype == "dir_exists":
+            path = os.path.join(sandbox_path, target)
+            if os.path.isdir(path):
+                return {"passed": True, "message": "Directory created!"}
+            return {"passed": False, "message": "Directory not found"}
+
+        elif vtype == "file_content_contains":
+            path = os.path.join(sandbox_path, target)
+            if not os.path.exists(path):
+                return {"passed": False, "message": f"File {target} not found"}
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                content = f.read()
+            if str(expected) in content:
+                return {"passed": True, "message": "Content verified!"}
+            return {"passed": False, "message": "Expected content not found in file"}
+
+        # === OUTPUT-BASED CHECKS (Level 2) ===
+        # Check what the player's last command printed to stdout.
+
+        elif vtype == "player_output_contains":
+            if not last_stdout.strip():
+                return {"passed": False, "message": "Run a command to produce output"}
+            if expected.lower() in last_stdout.lower():
+                return {"passed": True, "message": "Correct output!"}
+            return {"passed": False, "message": "Not quite — check your command"}
+
+        elif vtype == "player_output_equals":
+            if not last_stdout.strip():
+                return {"passed": False, "message": "Run a command to produce output"}
+            actual = last_stdout.strip()
+            exp = str(expected).strip()
+            if actual == exp:
+                return {"passed": True, "message": "Exact match!"}
+            # "wc -l" on some systems prints "25 file.txt" — accept if expected
+            # appears as a standalone token in the output.
+            if exp in actual.split():
+                return {"passed": True, "message": "Correct!"}
+            return {"passed": False, "message": "Not quite — check your command"}
+
+        else:
+            return {"passed": False, "message": f"Unknown validation type: {vtype}"}
+
+    except Exception as e:
+        return {"passed": False, "message": f"Validation error: {str(e)}"}
