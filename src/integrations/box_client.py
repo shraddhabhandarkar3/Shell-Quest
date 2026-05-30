@@ -53,6 +53,7 @@ BOX_DEVELOPER_TOKEN = os.environ.get("BOX_DEVELOPER_TOKEN")
 BOX_CLIENT_ID = os.environ.get("BOX_CLIENT_ID")
 BOX_CLIENT_SECRET = os.environ.get("BOX_CLIENT_SECRET")
 BOX_ENTERPRISE_ID = os.environ.get("BOX_ENTERPRISE_ID")
+BOX_USER_ID = os.environ.get("BOX_USER_ID")
 BOX_STATE_FOLDER_ID = os.environ.get("BOX_STATE_FOLDER_ID")
 
 _API = "https://api.box.com/2.0"
@@ -65,27 +66,40 @@ _API = "https://api.box.com/2.0"
 def init_box() -> None:
     """Initialise the Box client. Call once at game startup.
 
-    Uses CCG auth (auto-refreshing) when BOX_ENTERPRISE_ID + client creds are
-    present; otherwise the Developer Token. Sets module-level flags so every
-    other function knows whether Box is available.
+    Auth preference (most durable first):
+      1. CCG as user      (BOX_USER_ID)       — auto-refreshing, files in your
+                                                 personal Box. Best for demos.
+      2. CCG as enterprise (BOX_ENTERPRISE_ID) — auto-refreshing, service account.
+      3. Developer Token  (BOX_DEVELOPER_TOKEN) — expires after 60 min.
+
+    Sets module-level flags so every other function knows whether Box is
+    available. CCG (1 & 2) needs no manual token refresh — survives a long demo.
     """
     global _client, _box_enabled
 
     if not (BOX_CLIENT_ID and BOX_CLIENT_SECRET and
-            (BOX_ENTERPRISE_ID or BOX_DEVELOPER_TOKEN)):
+            (BOX_USER_ID or BOX_ENTERPRISE_ID or BOX_DEVELOPER_TOKEN)):
         console.print("[dim][Box] Not configured — using local storage[/]")
         return
 
     try:
         from boxsdk import Client
-        if BOX_ENTERPRISE_ID:
+        if BOX_USER_ID or BOX_ENTERPRISE_ID:
             from boxsdk import CCGAuth
-            auth = CCGAuth(
-                client_id=BOX_CLIENT_ID,
-                client_secret=BOX_CLIENT_SECRET,
-                enterprise_id=BOX_ENTERPRISE_ID,
-            )
-            mode = "CCG"
+            if BOX_USER_ID:
+                auth = CCGAuth(
+                    client_id=BOX_CLIENT_ID,
+                    client_secret=BOX_CLIENT_SECRET,
+                    user=BOX_USER_ID,
+                )
+                mode = "CCG (user — auto-refreshing)"
+            else:
+                auth = CCGAuth(
+                    client_id=BOX_CLIENT_ID,
+                    client_secret=BOX_CLIENT_SECRET,
+                    enterprise_id=BOX_ENTERPRISE_ID,
+                )
+                mode = "CCG (enterprise — auto-refreshing)"
         else:
             from boxsdk import OAuth2
             auth = OAuth2(
@@ -93,7 +107,7 @@ def init_box() -> None:
                 client_secret=BOX_CLIENT_SECRET,
                 access_token=BOX_DEVELOPER_TOKEN,
             )
-            mode = "developer token"
+            mode = "developer token (expires in 60 min)"
 
         _client = Client(auth)
         user = _client.user().get()
