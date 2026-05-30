@@ -607,305 +607,39 @@ OUTPUT-BASED TESTS:
 ## TICKET-4: Apify integration
 
 **Owner:** Person B
-**Depends on:** TICKET-0
+**Depends on:** TICKET-0, TICKET-1
 
-**Prompt:**
+### What it does
 
-```
-Implement src/integrations/apify_client.py.
+Implement `src/integrations/apify_client.py` with two functions. The stub file and its docstrings describe the expected signatures and return shapes — read those first before implementing.
 
-Three responsibilities:
-1. Scrape Wikipedia articles for game themes
-2. Scrape tldr pages for command hints
-3. Scrape GitHub profiles for player info
+**Responsibility 1 — `scrape_theme_content(theme)`**
 
-import requests, os, re
-from rich.console import Console
-from rich.panel import Panel
-from dotenv import load_dotenv
+Use Apify's website-content-crawler to scrape the live web for recent, relevant content about the theme (e.g. for "ocean": news articles about ocean research, marine biology blogs, science publications). The goal is real, current content — not Wikipedia. Wikipedia is already wired as a fallback in `main.py` for when this function returns `None`; Apify should not duplicate that fallback internally.
 
-load_dotenv()
-console = Console()
+Each scrape query in `theme["scrape_queries"]` provides a suggested URL and a target filename. You can use those URLs as starting points or find better ones. What matters is that the returned content is meaningful, plaintext, 500–3000 chars per item, and thematically relevant.
 
-APIFY_TOKEN = os.environ.get("APIFY_API_TOKEN")
-_apify_enabled = bool(APIFY_TOKEN)
+Return `None` (don't raise) on any failure so the Wikipedia fallback in `main.py` kicks in automatically.
 
-if not _apify_enabled:
-    console.print(
-        "[dim][Apify] Not configured — using fallback content[/]")
+**Responsibility 2 — `fetch_shell_challenges(theme)`**
 
-APIFY_BASE = "https://api.apify.com/v2"
-CRAWLER_ACTOR = "apify~website-content-crawler"
+Use Apify to scrape StackOverflow (questions tagged `bash` or `shell`) or a similar developer resource for real questions involving shell commands (grep, wc, sort, uniq, find, pipes). These surface as the basis for Level 2 challenges so players tackle problems real developers asked.
 
+Filter for beginner-friendly questions. Extract the question title, a short body snippet, and which shell commands are mentioned. Return `None` on failure — the game skips the bonus round silently.
 
-def _call_crawler(urls: list[str], timeout: int = 30) -> list[dict]:
-    """
-    Internal helper: call Apify website-content-crawler with
-    a list of URLs. Returns list of scraped page dicts.
-    Raises on failure.
-    """
-    response = requests.post(
-        f"{APIFY_BASE}/acts/{CRAWLER_ACTOR}"
-        f"/run-sync-get-dataset-items",
-        params={"token": APIFY_TOKEN},
-        json={
-            "startUrls": [{"url": u} for u in urls],
-            "maxCrawlPages": len(urls),
-            "crawlerType": "cheerio",
-            "maxCrawlDepth": 0
-        },
-        headers={"Content-Type": "application/json"},
-        timeout=timeout
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def _clean_scraped_text(text: str, max_chars: int = 3000) -> str:
-    """Clean scraped markdown/text for use as game files."""
-    # Remove markdown images
-    text = re.sub(r'!\[.*?\]\(.*?\)', '', text)
-    # Remove link markup but keep link text
-    text = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', text)
-    # Remove HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    # Remove markdown headers markup (keep text)
-    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)
-    # Collapse multiple blank lines
-    text = re.sub(r'\n{3,}', '\n\n', text)
-    # Trim to max length at sentence boundary
-    text = text.strip()
-    if len(text) > max_chars:
-        cut = text[:max_chars].rfind('.')
-        text = text[:cut + 1] if cut > max_chars * 0.6 \
-            else text[:max_chars]
-    return text.strip()
-
-
-# === FEATURE 1: Theme content scraping ===
-
-def scrape_theme_content(theme: dict) -> list[dict] | None:
-    """
-    Scrape all URLs defined in theme["scrape_queries"].
-
-    Returns list of:
-        {"url": str, "filename": str, "content": str}
-    or None on total failure.
-    """
-    urls = [q["url"] for q in theme["scrape_queries"]]
-
-    # Try Apify first
-    if _apify_enabled:
-        try:
-            items = _call_crawler(urls, timeout=45)
-            results = []
-            for query in theme["scrape_queries"]:
-                matching = [
-                    item for item in items
-                    if query["url"] in item.get("url", "")
-                ]
-                if matching:
-                    raw = matching[0].get("text", "") or \
-                        matching[0].get("markdown", "") or ""
-                    content = _clean_scraped_text(raw)
-                    if content and len(content) > 50:
-                        results.append({
-                            "url": query["url"],
-                            "filename": query["filename"],
-                            "content": content
-                        })
-            if results:
-                console.print(
-                    f"[dim][Apify] Scraped {len(results)} pages "
-                    f"for {theme['name']}[/]")
-                return results
-        except Exception as e:
-            console.print(
-                f"[dim][Apify] Scrape failed ({e}) — trying "
-                f"fallback[/]")
-
-    # Fallback: Wikipedia REST API (no Apify needed)
-    return _wikipedia_fallback(theme)
-
-
-def _wikipedia_fallback(theme: dict) -> list[dict] | None:
-    """Fetch article summaries directly from Wikipedia API."""
-    results = []
-    for query in theme["scrape_queries"]:
-        if "wikipedia.org/wiki/" not in query["url"]:
-            continue
-        title = query["url"].split("/wiki/")[-1]
-        try:
-            # Use the full extract, not just summary
-            resp = requests.get(
-                f"https://en.wikipedia.org/api/rest_v1/page/"
-                f"summary/{title}",
-                timeout=10,
-                headers={"User-Agent": "ShellQuest/1.0"})
-            resp.raise_for_status()
-            data = resp.json()
-            content = data.get("extract", "")
-            if content and len(content) > 50:
-                results.append({
-                    "url": query["url"],
-                    "filename": query["filename"],
-                    "content": content
-                })
-        except requests.RequestException:
-            continue
-
-    if results:
-        console.print(
-            f"[dim][Fallback] Loaded {len(results)} articles "
-            f"from Wikipedia API[/]")
-        return results
-
-    # Last resort: minimal placeholder content
-    console.print("[dim][Fallback] Using placeholder content[/]")
-    return [
-        {
-            "url": q["url"],
-            "filename": q["filename"],
-            "content": (
-                f"Research data file for {theme['name']}.\n"
-                f"This document contains observations and "
-                f"field notes collected at the "
-                f"{theme['setting_name']}.\n"
-                f"Data collection is ongoing.\n"
-            ) * 5
-        }
-        for q in theme["scrape_queries"]
-    ]
-
-
-# === FEATURE 2: Command hints ===
-
-def fetch_hint(command: str) -> str:
-    """
-    Fetch a usage hint for a shell command.
-    Tries: Apify → GitHub raw tldr → generic fallback.
-    Returns a rich-formatted string ready to console.print().
-    """
-    # Try Apify
-    if _apify_enabled:
-        try:
-            items = _call_crawler(
-                [f"https://tldr.inbrowser.app/pages/common/"
-                 f"{command}"],
-                timeout=15)
-            if items:
-                raw = items[0].get("text", "") or \
-                    items[0].get("markdown", "")
-                if raw:
-                    return _format_hint(command, raw)
-        except Exception:
-            pass
-
-    # Fallback: GitHub raw tldr-pages
-    for section in ["common", "linux"]:
-        try:
-            resp = requests.get(
-                f"https://raw.githubusercontent.com/tldr-pages"
-                f"/tldr/main/pages/{section}/{command}.md",
-                timeout=5)
-            if resp.status_code == 200:
-                return _format_hint(command, resp.text)
-        except requests.RequestException:
-            continue
-
-    return f"[yellow]Hint: try looking up '{command}' — " \
-        f"couldn't fetch docs right now[/]"
-
-
-def _format_hint(command: str, raw_text: str) -> str:
-    """Parse tldr-style markdown into a formatted hint panel."""
-    lines = raw_text.strip().split("\n")
-    description = ""
-    examples = []
-
-    for line in lines:
-        line = line.strip()
-        if line.startswith(">"):
-            desc_part = line.lstrip("> ").strip()
-            if desc_part:
-                description += desc_part + " "
-        elif line.startswith("`") and line.endswith("`"):
-            examples.append(line.strip("`"))
-
-    description = description.strip() or \
-        f"The {command} command"
-    example_lines = "\n".join(
-        f"  [cyan]$ {ex}[/]" for ex in examples[:4])
-
-    content = f"{description}\n\n{example_lines}" \
-        if example_lines else description
-
-    return Panel(
-        content,
-        title=f"hint: {command}",
-        border_style="yellow",
-        padding=(1, 2)
-    ).__rich_console__(console, console.options).__next__()
-    # Actually, Panel can't be converted to string that way.
-    # Instead, return the panel content as a formatted string
-    # and let the caller print it. Or use console.export_text.
-
-    # Simpler approach: return a manually formatted string
-    border = "─" * 44
-    return (
-        f"[yellow]┌─ hint: {command} {border[:40 - len(command)]}┐[/]\n"
-        f"[yellow]│[/] {description}\n"
-        f"[yellow]│[/]\n"
-        + "\n".join(
-            f"[yellow]│[/]   [cyan]$ {ex}[/]"
-            for ex in examples[:4])
-        + f"\n[yellow]└{border}─┘[/]"
-    )
-
-
-# === FEATURE 3: GitHub profile ===
-
-def fetch_github_profile(username: str) -> dict:
-    """
-    Fetch GitHub profile info. Returns:
-        {"name": str, "avatar": str, "bio": str}
-    """
-    fallback = {
-        "name": username,
-        "avatar": f"https://github.com/{username}.png",
-        "bio": ""
-    }
-
-    if _apify_enabled:
-        try:
-            items = _call_crawler(
-                [f"https://github.com/{username}"],
-                timeout=15)
-            if items:
-                raw = items[0].get("text", "") or ""
-                lines = [l.strip() for l in raw.split("\n")
-                         if l.strip()]
-                if lines:
-                    fallback["name"] = lines[0][:50]
-                    for line in lines[1:10]:
-                        if 10 < len(line) < 160 and \
-                            not line.startswith("http") and \
-                            not line.startswith("{"):
-                            fallback["bio"] = line
-                            break
-        except Exception:
-            pass
-
-    return fallback
-```
+**What to keep in mind:**
+- `APIFY_API_TOKEN` comes from the environment via `python-dotenv`. Check if it is set before making any Apify calls. If not set, return `None` immediately from both functions.
+- Use Apify's `apify~website-content-crawler` actor with `run-sync-get-dataset-items` for synchronous results.
+- Set reasonable timeouts (30–45s for theme scraping, 20s for challenges).
+- Clean scraped text before returning: strip markdown, HTML tags, image syntax, collapse blank lines, trim to max length at a sentence boundary.
+- No function should ever raise an exception — catch everything and return `None`.
 
 **Acceptance criteria:**
-- `scrape_theme_content(ocean_theme)` returns 3 pages of real content (with Apify token) or Wikipedia fallback (without)
-- `fetch_hint("grep")` returns a formatted hint with description and examples
-- `fetch_github_profile("octocat")` returns name, avatar URL, bio
-- All three functions work with `APIFY_API_TOKEN=""` (fallback mode)
-- No function ever raises an exception — all return graceful fallbacks
-- Timeouts work (no hanging)
+- `scrape_theme_content(ocean_theme)` returns at least 2 items of real web content when `APIFY_API_TOKEN` is set
+- `scrape_theme_content(ocean_theme)` returns `None` (not an exception) when token is missing
+- `fetch_shell_challenges(ocean_theme)` returns a list of dicts with `title`, `body`, `commands` keys
+- `fetch_shell_challenges(ocean_theme)` returns `None` gracefully when token is missing or scrape fails
+- No hanging — all HTTP calls have explicit timeouts
 
 ---
 
@@ -914,235 +648,48 @@ def fetch_github_profile(username: str) -> dict:
 **Owner:** Person B
 **Depends on:** TICKET-0
 
-**Prompt:**
+### What it does
 
-```
-Implement src/integrations/box_client.py.
+Implement `src/integrations/box_client.py`. The stub file already has all function signatures and detailed docstrings — read those before starting. Four responsibilities:
 
-Single responsibility: persist and retrieve player state.
+**1 — Player state (`init_box`, `save_player_state`, `load_player_state`)**
 
-from boxsdk import JWTAuth, Client
-from rich.console import Console
-import json, os, io, pathlib
-from dotenv import load_dotenv
-from datetime import datetime
+Initialise a Box JWT client from `BOX_CONFIG_PATH` and `BOX_STATE_FOLDER_ID` env vars. Save per-player state as `player-{id}.json` in the Box state folder — update in place if the file already exists. Always mirror to `~/.shellquest/` locally so the game works offline. Load tries Box first, falls back to local. If Box is not configured, everything silently uses local storage only.
 
-load_dotenv()
-console = Console()
+Also create `scripts/setup_box.py` — a one-shot script that authenticates, finds or creates a `ShellQuest/state/` folder hierarchy in Box, and prints the folder ID to paste into `.env`.
 
-_client = None
-_box_enabled = False
+**2 — Box AI contextual hints (`fetch_ai_hint`)**
 
-BOX_CONFIG_PATH = os.environ.get("BOX_CONFIG_PATH")
-BOX_STATE_FOLDER_ID = os.environ.get("BOX_STATE_FOLDER_ID")
+When called with a shell command name and a local file path, upload the file to Box as a temporary file, call `POST /ai/ask` in `single_item_qa` mode asking Box AI to give a one-or-two sentence hint (not the full answer) about how that command could help analyse the file. Delete the temp file after getting the response. Return the hint string or `None` on any failure.
 
-if not (BOX_CONFIG_PATH and BOX_STATE_FOLDER_ID):
-    console.print(
-        "[dim][Box] Not configured — using local storage[/]")
+**3 — Challenge task tracking (`create_session_tasks`, `complete_challenge_task`, `cleanup_session_tasks`)**
 
+At session start: for each challenge whose validation target is a real file, upload that file to Box and create a Box Task on it with the challenge instruction as the task message. Return a map of `{challenge_id: {task_id, file_id}}`. As challenges are completed in the game loop, mark the corresponding task complete via `complete_challenge_task`. At session end, delete all uploaded files via `cleanup_session_tasks`. Silent no-op if Box is not enabled.
 
-def init_box() -> None:
-    """Initialize Box client. Call once at startup."""
-    global _client, _box_enabled
+**4 — Global leaderboard (`update_leaderboard`, `get_leaderboard`)**
 
-    if not (BOX_CONFIG_PATH and BOX_STATE_FOLDER_ID):
-        return
+Maintain a single `leaderboard.json` in the Box state folder. To update: lock the file → download → update the player's entry for this theme → sort by descending score → re-upload → unlock. This prevents corruption when two players finish simultaneously. `get_leaderboard` just downloads and returns the scores list. Both return gracefully if Box is not enabled.
 
-    try:
-        auth = JWTAuth.from_settings_file(BOX_CONFIG_PATH)
-        auth.authenticate_instance()
-        _client = Client(auth)
-        user = _client.user().get()
-        console.print(f"[dim][Box] Connected as {user.name}[/]")
-        _box_enabled = True
-    except Exception as e:
-        console.print(
-            f"[dim][Box] Auth failed: {e} — using local "
-            f"storage[/]")
-        _box_enabled = False
+**BONUS — Completion certificate (`create_completion_certificate`)**
 
+Generate a formatted plain-text certificate with the player's name, theme, scores, time, and star rating. Upload to Box, create a shared link with open (`public`) access, and return the URL. If the file already exists for this player+theme, update it in place. Return `None` if Box is not enabled or any step fails.
 
-def save_player_state(player: dict) -> bool:
-    """
-    Save player state. Always saves locally. Also saves to Box
-    if connected.
-
-    player dict shape:
-    {
-        "id": str,
-        "name": str,
-        "github_username": str,
-        "github_avatar": str,
-        "github_bio": str,
-        "completed_themes": [
-            {
-                "theme_id": str,
-                "theme_name": str,
-                "level_1_score": int,
-                "level_1_max": int,
-                "level_2_score": int,
-                "level_2_max": int,
-                "total_time_seconds": int,
-                "stars": str,
-                "completed_at": str (ISO)
-            }
-        ],
-        "total_score": int
-    }
-    """
-    data = {**player, "last_saved": datetime.now().isoformat()}
-    json_str = json.dumps(data, indent=2)
-
-    # Always save locally
-    _save_local(data)
-
-    if not _box_enabled:
-        return True
-
-    try:
-        filename = f"player-{player['id']}.json"
-        folder = _client.folder(BOX_STATE_FOLDER_ID)
-
-        existing = _find_file_in_folder(folder, filename)
-        stream = io.BytesIO(json_str.encode("utf-8"))
-
-        if existing:
-            existing.update_contents_with_stream(stream)
-        else:
-            folder.upload_stream(stream, filename)
-
-        return True
-    except Exception as e:
-        console.print(f"[dim][Box] Save failed: {e}[/]")
-        return False
-
-
-def load_player_state(player_id: str) -> dict | None:
-    """
-    Load player state. Tries Box first, then local fallback.
-    Returns None if no state found.
-    """
-    if _box_enabled:
-        try:
-            folder = _client.folder(BOX_STATE_FOLDER_ID)
-            filename = f"player-{player_id}.json"
-            found = _find_file_in_folder(folder, filename)
-            if found:
-                content = found.content().decode("utf-8")
-                return json.loads(content)
-        except Exception as e:
-            console.print(f"[dim][Box] Load failed: {e}[/]")
-
-    return _load_local(player_id)
-
-
-def _find_file_in_folder(folder, filename: str):
-    """Find a file by name in a Box folder. Returns file object
-    or None."""
-    try:
-        for item in folder.get_items():
-            if item.name == filename and item.type == "file":
-                return _client.file(item.id)
-    except Exception:
-        pass
-    return None
-
-
-# === Local fallback ===
-
-def _local_dir() -> pathlib.Path:
-    p = pathlib.Path.home() / ".shellquest"
-    p.mkdir(exist_ok=True)
-    return p
-
-
-def _save_local(data: dict) -> None:
-    try:
-        path = _local_dir() / f"player-{data['id']}.json"
-        with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-    except Exception:
-        pass
-
-
-def _load_local(player_id: str) -> dict | None:
-    try:
-        path = _local_dir() / f"player-{player_id}.json"
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-    except Exception:
-        pass
-    return None
-```
-
-Also create scripts/setup_box.py:
-
-```
-"""
-Run once to create the ShellQuest folder in Box and get
-the folder ID for .env.
-
-Usage: python scripts/setup_box.py
-"""
-from boxsdk import JWTAuth, Client
-from dotenv import load_dotenv
-import os
-
-load_dotenv()
-
-def main():
-    config_path = os.environ.get("BOX_CONFIG_PATH")
-    if not config_path:
-        print("Set BOX_CONFIG_PATH in .env first")
-        return
-
-    auth = JWTAuth.from_settings_file(config_path)
-    auth.authenticate_instance()
-    client = Client(auth)
-
-    user = client.user().get()
-    print(f"Connected as: {user.name}")
-
-    root = client.folder("0")
-
-    # Find or create ShellQuest folder
-    sq_folder = None
-    for item in root.get_items():
-        if item.name == "ShellQuest" and item.type == "folder":
-            sq_folder = client.folder(item.id)
-            print(f"Found existing ShellQuest folder: {item.id}")
-            break
-    if not sq_folder:
-        sq_folder = root.create_subfolder("ShellQuest")
-        print(f"Created ShellQuest folder: {sq_folder.id}")
-
-    # Find or create state subfolder
-    state_folder = None
-    for item in sq_folder.get_items():
-        if item.name == "state" and item.type == "folder":
-            state_folder = client.folder(item.id)
-            print(f"Found existing state folder: {item.id}")
-            break
-    if not state_folder:
-        state_folder = sq_folder.create_subfolder("state")
-        print(f"Created state folder: {state_folder.id}")
-
-    print(f"\nAdd this to your .env:")
-    print(f"BOX_STATE_FOLDER_ID={state_folder.id}")
-
-if __name__ == "__main__":
-    main()
-```
+**What to keep in mind:**
+- Use `boxsdk` (already in `requirements.txt`) with `JWTAuth.from_settings_file`.
+- All functions must catch all exceptions and return `None`/`False`/`{}` — never crash the game.
+- Keep a module-level `_client` and `_box_enabled` flag set by `init_box`.
+- For the leaderboard file lock: Box SDK exposes `file.lock()` and `file.unlock()`.
+- For Box AI: the endpoint is `POST /2.0/ai/ask` — use `_client.make_request` or `requests` with the Bearer token.
 
 **Acceptance criteria:**
-- `init_box()` connects successfully with valid credentials
-- `save_player_state(player)` creates a JSON file in Box (verify in Box web UI)
-- `save_player_state(player)` again updates the same file (not duplicate)
-- `load_player_state(id)` retrieves the saved data
-- All functions work with no Box config (local fallback)
-- `setup_box.py` creates folders and prints the ID
-- No function ever crashes the game
+- `init_box()` connects and prints the connected user name, or silently falls back
+- `save_player_state` creates/updates a JSON file in Box (visible in web UI) and locally
+- `load_player_state` round-trips the data correctly
+- `fetch_ai_hint("grep", path_to_log_file)` returns a non-generic hint string referencing the file
+- Box Tasks appear on files in Box web UI at session start and tick complete as challenges are solved
+- Two simultaneous `update_leaderboard` calls don't corrupt the file
+- `create_completion_certificate` returns a URL that opens in a browser without login
+- All functions work with no Box config — no crashes, no error messages to the player
 
 ---
 
@@ -2206,6 +1753,15 @@ Harden edge cases:
 
 ---
 
+---
+
+> **Note:** TICKET-13, 14, and 15 have been consolidated into TICKET-5.
+> All Box API features (AI hints, task tracking, leaderboard, certificate)
+> are now part of Person B's box_client.py implementation.
+> The wiring into main.py is Person A's responsibility in TICKET-8.
+
+---
+
 ## TICKET-13: Box AI contextual hints
 
 **Owner:** Person B
@@ -2569,17 +2125,17 @@ TICKET-0 (scaffold)
   ├── TICKET-4 (apify)                    ↓
   └── TICKET-5 (box)              →  TICKET-8 (integration)
                                        ├── TICKET-9  (demo/README)
-                                       ├── TICKET-10 (hardening)
-                                       ├── TICKET-13 (Box AI hints)
-                                       ├── TICKET-14 (Box Tasks)
-                                       └── TICKET-15 (Leaderboard)
+                                       └── TICKET-10 (hardening)
 ```
 
-**Person A path:** 0 → 2 → 3 → 6 → 7 → 8 → 10 → 15 (wire main.py)
-**Person B path:** 0 → 1 → 4 → 5 → 8 → 9 → 13 → 14 → 15 (box_client.py functions)
+**Person A path:** 0 → 2 → 3 → 6 → 7 → 8 → 10
+**Person B path:** 0 → 1 → 4 → 5 → 8 → 9
+
+TICKET-5 covers all Box API features: state persistence, AI hints, task
+tracking, leaderboard, and completion certificate. Person A wires the
+Box functions into main.py as part of TICKET-8.
 
 Both converge at TICKET-8 for integration testing.
-13, 14, 15 can all be worked in parallel after TICKET-8.
 
 ---
 

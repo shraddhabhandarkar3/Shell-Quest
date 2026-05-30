@@ -23,10 +23,49 @@ from src.engine.runner import execute_command, handle_cd
 from src.engine.checker import validate_challenge
 from src.engine.theme_builder import build_level_from_theme
 from src.integrations.box_client import init_box, save_player_state, load_player_state
-from src.integrations.apify_client import scrape_theme_content, fetch_hint, fetch_github_profile
+from src.integrations.apify_client import scrape_theme_content
 
 console = Console()
 _active_cleanup = None
+
+
+def fetch_github_profile(username: str) -> dict:
+    """Fetch GitHub profile via the public REST API (no Apify needed)."""
+    import requests
+    fallback = {"name": username, "avatar": f"https://github.com/{username}.png", "bio": ""}
+    try:
+        resp = requests.get(
+            f"https://api.github.com/users/{username}",
+            headers={"User-Agent": "ShellQuest/1.0"},
+            timeout=5,
+        )
+        if resp.status_code == 200:
+            data = resp.json()
+            fallback["name"] = data.get("name") or username
+            fallback["bio"] = data.get("bio") or ""
+    except Exception:
+        pass
+    return fallback
+
+
+def fetch_hint(command: str) -> str:
+    """Fetch a tldr hint via GitHub raw (no Apify needed)."""
+    import requests
+    for section in ["common", "linux"]:
+        try:
+            resp = requests.get(
+                f"https://raw.githubusercontent.com/tldr-pages/tldr/main/pages/{section}/{command}.md",
+                timeout=5,
+            )
+            if resp.status_code == 200:
+                lines = resp.text.strip().split("\n")
+                desc = next((l.lstrip("> ").strip() for l in lines if l.startswith(">")), f"The {command} command")
+                examples = [l.strip("`") for l in lines if l.startswith("`") and l.endswith("`")]
+                ex_lines = "\n".join(f"  [cyan]$ {e}[/]" for e in examples[:4])
+                return f"[yellow]Hint: {desc}[/]\n{ex_lines}" if ex_lines else f"[yellow]Hint: {desc}[/]"
+        except Exception:
+            continue
+    return f"[yellow]Hint: try the [cyan]{command}[/cyan] command[/]"
 
 
 def main() -> None:
