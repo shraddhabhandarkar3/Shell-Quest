@@ -20,14 +20,16 @@ def _client():
     cid = os.environ.get("BOX_CLIENT_ID")
     sec = os.environ.get("BOX_CLIENT_SECRET")
     ent = os.environ.get("BOX_ENTERPRISE_ID")
+    uid = os.environ.get("BOX_USER_ID")
     tok = os.environ.get("BOX_DEVELOPER_TOKEN")
-    if not (cid and sec and (ent or tok)):
+    if not (cid and sec and (uid or ent or tok)):
         raise SystemExit(
-            "Set BOX_CLIENT_ID, BOX_CLIENT_SECRET and either "
+            "Set BOX_CLIENT_ID, BOX_CLIENT_SECRET and one of BOX_USER_ID / "
             "BOX_ENTERPRISE_ID (CCG) or BOX_DEVELOPER_TOKEN in .env first.")
-    if ent:
+    if uid or ent:
         from boxsdk import CCGAuth
-        auth = CCGAuth(client_id=cid, client_secret=sec, enterprise_id=ent)
+        auth = (CCGAuth(client_id=cid, client_secret=sec, user=uid) if uid
+                else CCGAuth(client_id=cid, client_secret=sec, enterprise_id=ent))
     else:
         from boxsdk import OAuth2
         auth = OAuth2(client_id=cid, client_secret=sec, access_token=tok)
