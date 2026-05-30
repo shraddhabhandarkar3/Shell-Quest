@@ -1,5 +1,11 @@
 """Theme builder.
 
+After building a level, call compute_challenge_answers(level["level_2_challenges"],
+sandbox_path) to run each solution_command against the real seeded files and fill
+in the exact expected output. This makes validation ground-truth accurate regardless
+of file content.
+
+
 Bridges scraped web content and a playable game: turns raw scraped pages into
 themed sandbox files (articles, a CSV, a log, notes) and generates the Level 1
 (state-based) and Level 2 (output-based) challenges, with Level 2 expected values
@@ -9,6 +15,36 @@ computed from the actual file content. Implemented in TICKET-6.
 import re
 import random
 from datetime import datetime, timedelta
+
+
+# ---------------------------------------------------------------------------
+# Answer computation
+# ---------------------------------------------------------------------------
+
+def compute_challenge_answers(challenges: list[dict], sandbox_path: str) -> list[dict]:
+    """Run each challenge's solution_command in the sandbox and store the output
+    as the validation expected value.
+
+    Call this after seed_sandbox() so the files actually exist.
+    Challenges without a solution_command are left unchanged.
+    """
+    from src.engine.runner import execute_command
+
+    for challenge in challenges:
+        cmd = challenge.get("solution_command")
+        if not cmd:
+            continue
+        result = execute_command(cmd, sandbox_path, sandbox_path)
+        if result["exit_code"] == 0 and result["stdout"].strip():
+            challenge["validation"]["expected"] = result["stdout"].strip()
+        else:
+            # Solution command failed — fall back to a loose contains check
+            # so the challenge still works rather than being impossible.
+            challenge["validation"]["type"] = "player_output_contains"
+            challenge["validation"]["expected"] = challenge.get(
+                "validation", {}).get("expected", "")
+
+    return challenges
 
 
 # ---------------------------------------------------------------------------
@@ -90,12 +126,23 @@ def process_scraped_content(raw_pages: list[dict], theme: dict) -> list[dict]:
         csv_rows.append(f"{i},{term},{cat},{count},{status}")
     files.append({"path": "field_data.csv", "content": "\n".join(csv_rows) + "\n"})
 
-    # Log file
+    # Log file — inject a seed ERROR that explicitly names field_data.csv
     log_lines = _generate_log(terms, setting=theme["setting_name"])
+    seed_error = (
+        f"[2024-03-15 17:42] ERROR: Data corruption detected in field_data.csv "
+        f"— anomalous entries found across multiple categories. Investigate immediately."
+    )
+    # Insert the seed near the end so it feels like the last thing that happened
+    log_lines.insert(max(0, len(log_lines) - 2), seed_error)
     files.append({"path": "station_log.txt", "content": "\n".join(log_lines) + "\n"})
 
-    # Notes file
-    files.append({"path": "notes.txt", "content": _generate_notes(files[:3])})
+    # READ_ME_FIRST.txt — narrative entry point with unambiguous clues
+    log_file = next(f for f in files if f["path"] == "station_log.txt")
+    csv_file = next(f for f in files if f["path"].endswith(".csv"))
+    files.append({
+        "path": "READ_ME_FIRST.txt",
+        "content": _generate_briefing(theme, files[:3], log_file, csv_file),
+    })
 
     return files
 
@@ -158,20 +205,53 @@ def _generate_log(terms: list[str], setting: str, num_lines: int = 25) -> list[s
     return lines
 
 
-def _generate_notes(article_files: list[dict]) -> str:
-    notes = []
-    for f in article_files:
-        sentences = re.split(r'(?<=[.!?])\s+', f["content"])
-        if len(sentences) >= 6:
-            picks = [sentences[0], sentences[len(sentences) // 2], sentences[-2]]
-        else:
-            picks = sentences[:3]
-        for s in picks:
-            s = s.strip()
-            if len(s) > 20:
-                notes.append(f"- {s}")
+def _generate_briefing(
+    theme: dict,
+    article_files: list[dict],
+    log_file: dict,
+    csv_file: dict,
+) -> str:
+    """Generate READ_ME_FIRST.txt — the in-world narrative entry point.
 
-    return "Field Notes\n" + "=" * 40 + "\n\n" + "\n\n".join(notes) + "\n"
+    Contains unambiguous, step-by-step clues pointing to specific files
+    so the player always knows exactly what to do next.
+    """
+    setting = theme["setting_name"]
+    name = theme["name"]
+    log_path = log_file["path"]
+    csv_path = csv_file["path"]
+    article_names = ", ".join(f["path"] for f in article_files[:3])
+
+    return f"""{name} — Situation Report
+{"=" * 52}
+
+You have just arrived at the {setting}. The previous team
+evacuated without warning and left the systems in disarray.
+
+WHAT WE KNOW
+------------
+The team's last communications mentioned critical system failures
+in the data infrastructure. Something went wrong — badly enough
+that they left everything behind.
+
+WHAT TO INVESTIGATE
+-------------------
+The station log ({log_path}) recorded every system event up
+until the moment the team went dark. It holds the answer.
+Focus on the ERROR entries — they will tell you what triggered
+the emergency. At least one of those errors names a specific
+data file that may be compromised.
+
+The data file ({csv_path}) tracks all collected observations
+by category. If records have been corrupted, the incident
+report needs to know exactly how many categories were affected.
+
+Store all your findings in a reports/ directory as you work.
+The background research files left by the previous team are
+also here: {article_names}
+
+Good luck.
+"""
 
 
 # ---------------------------------------------------------------------------
@@ -180,92 +260,89 @@ def _generate_notes(article_files: list[dict]) -> str:
 
 def build_level_1_challenges(files: list[dict], theme: dict) -> list[dict]:
     """Build beginner (ls, cat, mkdir, mv, cp) state-based challenges."""
-    main_file = files[0] if files else None
-    notes_file = next((f for f in files if f["path"] == "notes.txt"), None)
+    briefing_file = next((f for f in files if f["path"] == "READ_ME_FIRST.txt"), None)
     csv_file = next((f for f in files if f["path"].endswith(".csv")), None)
+    setting = theme["setting_name"]
 
     challenges = []
 
-    # 1. ls — explore
+    # 1. ls — discover the scene
     challenges.append({
         "id": "l1_explore",
         "instruction": (
-            f"Welcome to the {theme['setting_name']}! "
-            "Start by listing all files and directories to see what's here."
+            f"You've just arrived at the {setting}. "
+            "The place is deserted. Run ls to see what was left behind."
         ),
         "hint_command": "ls",
         "validation": {
             "type": "player_output_contains",
-            "expected": main_file["path"] if main_file else "notes",
+            "expected": "READ_ME_FIRST.txt",
         },
-        "success_message": "Good — now you can see what you're working with!",
+        "success_message": "There's a file here — READ_ME_FIRST.txt. You should open it.",
         "points": 10,
     })
 
-    # 2. cat — read a file
-    if main_file:
-        content_words = [
-            w for w in main_file["content"].split() if len(w) > 5 and w.isalpha()
-        ]
-        verify_word = content_words[10] if len(content_words) > 10 else "data"
+    # 2. cat — read the briefing
+    if briefing_file:
         challenges.append({
             "id": "l1_read",
             "instruction": (
-                f"Read {main_file['path']} to learn about this {theme['setting_name']}."
+                "There's a file called READ_ME_FIRST.txt. "
+                "Open it — it should explain what happened here."
             ),
             "hint_command": "cat",
             "validation": {
                 "type": "player_output_contains",
-                "expected": verify_word,
+                "expected": "Situation Report",
             },
-            "success_message": "Now you know what this place is about!",
+            "success_message": "Now you know what you're looking for. Time to get to work.",
             "points": 10,
         })
 
-    # 3. mkdir — create a directory
+    # 3. mkdir — set up reports dir (briefing mentions it)
     challenges.append({
         "id": "l1_mkdir",
         "instruction": (
-            "This place needs organizing. Create a 'reports' directory to store your findings."
+            "The situation report mentions storing findings in a reports/ directory. "
+            "Create it before you start digging."
         ),
         "hint_command": "mkdir",
         "validation": {"type": "dir_exists", "target": "reports"},
-        "success_message": "Nice — a place for everything!",
+        "success_message": "Good. You have somewhere to put your findings now.",
         "points": 15,
     })
 
-    # 4. mv — move a file
-    if notes_file:
+    # 4. mv — secure the briefing as evidence
+    if briefing_file:
         challenges.append({
             "id": "l1_move",
             "instruction": (
-                f"Move {notes_file['path']} into the reports/ directory to keep things tidy."
+                "Move READ_ME_FIRST.txt into reports/ — "
+                "it's the first piece of evidence for your incident report."
             ),
             "hint_command": "mv",
             "validation": {
                 "type": "file_exists",
-                "target": f"reports/{notes_file['path']}",
+                "target": "reports/READ_ME_FIRST.txt",
             },
-            "success_message": (
-                f"File relocated — the {theme['setting_name']} is getting tidier!"
-            ),
+            "success_message": "Evidence secured. The reports directory is taking shape.",
             "points": 15,
         })
 
-    # 5. cp — backup a file
+    # 5. cp — back up the data file before touching it
     if csv_file:
         challenges.append({
             "id": "l1_backup",
             "instruction": (
-                f"Make a backup copy of {csv_file['path']} "
-                f"called {csv_file['path']}.bak — never work without backups!"
+                f"The situation report flags {csv_file['path']} as potentially compromised. "
+                f"Back it up as {csv_file['path']}.bak before you touch it."
             ),
             "hint_command": "cp",
             "validation": {
                 "type": "file_exists",
                 "target": f"{csv_file['path']}.bak",
             },
-            "success_message": "Smart — always keep backups!",
+            "success_message": "Smart. Never analyze original data without a backup.",
             "points": 15,
         })
 
@@ -292,114 +369,98 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
     error_lines = [l for l in log_lines if "ERROR" in l]
     error_count = len(error_lines)
 
-    # 1. wc — count lines
+    setting = theme["setting_name"]
+
+    # 1. wc — count log entries
     challenges.append({
         "id": "l2_count",
         "instruction": (
-            f"How many entries are in {log_path}? Use a command to count the lines."
+            f"The briefing told you to start with {log_path}. "
+            f"How many entries does it have in total? "
+            f"You need the exact count for the incident report."
         ),
         "hint_command": "wc",
-        "validation": {
-            "type": "player_output_contains",
-            "expected": str(total_lines),
-        },
-        "success_message": (
-            f"Exactly {total_lines} entries — you're getting the hang of this!"
-        ),
+        "solution_command": f"cat {log_path} | wc -l",
+        "validation": {"type": "player_output_equals", "expected": ""},
+        "success_message": f"{total_lines} log entries — now find out what went wrong.",
         "points": 15,
     })
 
-    # 2. grep — find errors (only if there are errors)
+    # 2. grep — surface the errors
     if error_count > 0:
         challenges.append({
             "id": "l2_grep",
             "instruction": (
-                f"Something went wrong at the {theme['setting_name']}. "
-                f"Search for all 'ERROR' entries in {log_path}."
+                f"The briefing said to look for ERROR entries in {log_path}. "
+                "Show all of them — one of those errors is the key to this investigation."
             ),
             "hint_command": "grep",
-            "validation": {
-                "type": "player_output_contains",
-                "expected": "ERROR",
-            },
-            "success_message": f"Found {error_count} errors — good detective work!",
+            "solution_command": f"grep ERROR {log_path}",
+            "validation": {"type": "player_output_equals", "expected": ""},
+            "success_message": (
+                f"There it is — {error_count} errors. "
+                "One of them names field_data.csv. Keep going."
+            ),
             "points": 15,
         })
 
-        # 3. grep + wc pipe — count errors
+        # 3. pipe — get the exact error count
         challenges.append({
             "id": "l2_pipe_count",
             "instruction": (
-                f"Now count exactly how many ERROR lines there are in {log_path}. "
-                "Chain two commands together with a pipe."
+                f"The incident report needs an exact error count from {log_path}. "
+                "Filter for ERROR lines and count them in a single pipeline."
             ),
             "hint_command": "wc",
-            "validation": {
-                "type": "player_output_contains",
-                "expected": str(error_count),
-            },
-            "success_message": (
-                f"{error_count} errors confirmed. Piping commands is a superpower!"
-            ),
+            "solution_command": f"grep ERROR {log_path} | wc -l",
+            "validation": {"type": "player_output_equals", "expected": ""},
+            "success_message": f"{error_count} errors confirmed and logged.",
             "points": 20,
         })
     else:
-        # Fallback when no ERROR lines: count WARNING lines instead
         warning_count = len([l for l in log_lines if "WARNING" in l])
         challenges.append({
             "id": "l2_grep",
             "instruction": (
-                f"Find all 'WARNING' entries in {log_path} to spot potential issues."
+                f"There are no ERROR entries but the {setting} was still abandoned. "
+                f"Show all WARNING entries in {log_path} — something in there triggered it."
             ),
             "hint_command": "grep",
-            "validation": {
-                "type": "player_output_contains",
-                "expected": "WARNING",
-            },
-            "success_message": f"Found {warning_count} warnings — stay alert!",
+            "solution_command": f"grep WARNING {log_path}",
+            "validation": {"type": "player_output_equals", "expected": ""},
+            "success_message": f"{warning_count} warnings — that explains the evacuation.",
             "points": 15,
         })
 
-    # 4. sort — sort the log
+    # 4. sort — read the full timeline
     challenges.append({
         "id": "l2_sort",
         "instruction": (
-            f"Sort {log_path} alphabetically so entries of the same type group together."
+            f"Sort {log_path} so all entries of the same type are grouped. "
+            "This makes the full sequence of events readable at a glance."
         ),
         "hint_command": "sort",
-        "validation": {
-            "type": "player_output_contains",
-            "expected": "INFO",
-        },
-        "success_message": "Sorted! Notice how the entries group by type now.",
+        "solution_command": f"sort {log_path}",
+        "validation": {"type": "player_output_equals", "expected": ""},
+        "success_message": "Timeline reconstructed. The ERROR entries name field_data.csv — investigate it next.",
         "points": 15,
     })
 
-    # 5. cut + sort + uniq — unique categories in CSV
+    # 5. uniq — count affected categories in the corrupted CSV
     if csv_file:
-        csv_lines = csv_file["content"].strip().split("\n")
-        categories = set()
-        for line in csv_lines[1:]:  # skip header
-            parts = line.split(",")
-            if len(parts) >= 3:
-                categories.add(parts[2].strip())
-        unique_count = len(categories)
-
+        csv_path = csv_file["path"]
         challenges.append({
             "id": "l2_uniq",
             "instruction": (
-                f"The file {csv_file['path']} has a 'category' column (3rd column). "
-                "Find out how many unique categories there are. "
-                "Chain cut, sort, and uniq together."
+                f"The ERROR log named {csv_path} as corrupted. "
+                f"Its 3rd column is the data category. "
+                "Find out how many unique categories were affected — "
+                "chain cut, sort, and uniq to get the answer."
             ),
             "hint_command": "uniq",
-            "validation": {
-                "type": "player_output_contains",
-                "expected": str(unique_count),
-            },
-            "success_message": (
-                f"{unique_count} unique categories — you just built a real data pipeline!"
-            ),
+            "solution_command": f"cut -d',' -f3 {csv_path} | sort | uniq | wc -l",
+            "validation": {"type": "player_output_equals", "expected": ""},
+            "success_message": "Investigation complete. You have everything you need for the report.",
             "points": 25,
         })
 

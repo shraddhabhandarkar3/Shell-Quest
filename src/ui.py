@@ -326,7 +326,9 @@ def show_cd_result(new_path: str, theme_id: str) -> None:
 
 def set_terminal_title(text: str) -> None:
     """Set the terminal window/tab title via ANSI escape."""
-    console.print(f"\033]0;{text}\007", end="")
+    import sys
+    sys.stdout.write(f"\033]0;{text}\007")
+    sys.stdout.flush()
 
 
 def show_prompt_reminder(theme_id: str) -> None:
