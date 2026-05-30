@@ -380,6 +380,7 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
             f"You need the exact count for the incident report."
         ),
         "hint_command": "wc",
+        "hint_file": log_path,
         "solution_command": f"cat {log_path} | wc -l",
         "validation": {"type": "player_output_equals", "expected": ""},
         "success_message": f"{total_lines} log entries — now find out what went wrong.",
@@ -395,6 +396,7 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
                 "Show all of them — one of those errors is the key to this investigation."
             ),
             "hint_command": "grep",
+            "hint_file": log_path,
             "solution_command": f"grep ERROR {log_path}",
             "validation": {"type": "player_output_equals", "expected": ""},
             "success_message": (
@@ -412,6 +414,7 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
                 "Filter for ERROR lines and count them in a single pipeline."
             ),
             "hint_command": "wc",
+            "hint_file": log_path,
             "solution_command": f"grep ERROR {log_path} | wc -l",
             "validation": {"type": "player_output_equals", "expected": ""},
             "success_message": f"{error_count} errors confirmed and logged.",
@@ -426,6 +429,7 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
                 f"Show all WARNING entries in {log_path} — something in there triggered it."
             ),
             "hint_command": "grep",
+            "hint_file": log_path,
             "solution_command": f"grep WARNING {log_path}",
             "validation": {"type": "player_output_equals", "expected": ""},
             "success_message": f"{warning_count} warnings — that explains the evacuation.",
@@ -440,6 +444,7 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
             "This makes the full sequence of events readable at a glance."
         ),
         "hint_command": "sort",
+        "hint_file": log_path,
         "solution_command": f"sort {log_path}",
         "validation": {"type": "player_output_equals", "expected": ""},
         "success_message": "Timeline reconstructed. The ERROR entries name field_data.csv — investigate it next.",
@@ -458,6 +463,7 @@ def build_level_2_challenges(files: list[dict], theme: dict) -> list[dict]:
                 "chain cut, sort, and uniq to get the answer."
             ),
             "hint_command": "uniq",
+            "hint_file": csv_path,
             "solution_command": f"cut -d',' -f3 {csv_path} | sort | uniq | wc -l",
             "validation": {"type": "player_output_equals", "expected": ""},
             "success_message": "Investigation complete. You have everything you need for the report.",

@@ -24,15 +24,21 @@ from src.ui import (
     show_challenge_success, show_level_complete,
     show_completion, show_status_table, show_goodbye,
     set_terminal_title, show_prompt_reminder,
-    game_msg, show_command_output, show_cd_result,
+    game_msg, show_command_output, show_cd_result, console,
+    _style,
 )
 
 from src.engine.sandbox import create_sandbox, seed_sandbox
 from src.engine.runner import execute_command, handle_cd
 from src.engine.checker import validate_challenge
 from src.engine.theme_builder import build_level_from_theme, compute_challenge_answers
-from src.integrations.box_client import init_box, save_player_state, load_player_state
-from src.integrations.apify_client import scrape_theme_content
+from src.integrations.box_client import (
+    init_box, save_player_state, load_player_state, fetch_ai_hint,
+    create_session_tasks, complete_challenge_task, cleanup_session_tasks,
+    update_leaderboard, get_leaderboard,
+    create_completion_certificate,
+)
+from src.integrations.apify_client import scrape_theme_content, fetch_shell_challenges
 
 console = Console()
 _active_cleanup = None
@@ -206,13 +212,21 @@ def main() -> None:
         seed_sandbox(sandbox_path, level["files"])
         compute_challenge_answers(level["level_2_challenges"], sandbox_path)
 
+        # Create Box Tasks for all challenges (visible in Box web UI)
+        all_challenges = level["level_1_challenges"] + level["level_2_challenges"]
+        task_map = create_session_tasks(level["files"], all_challenges, sandbox_path)
+
+        def _cleanup_session():
+            cleanup_session_tasks(task_map)
+            cleanup()
+
         # ── Level 1 ──────────────────────────────────────────────────────────
         show_level_banner(theme, 1, level["story_level_1"], level["commands_taught_l1"])
 
-        l1_result = _play_challenges(level["level_1_challenges"], sandbox_path, theme)
+        l1_result = _play_challenges(level["level_1_challenges"], sandbox_path, theme, task_map)
 
         if l1_result is None:
-            cleanup()
+            _cleanup_session()
             _active_cleanup = None
             continue
 
@@ -229,25 +243,70 @@ def main() -> None:
 
         if not proceed:
             _save_theme_result(player, theme, l1_score, l1_max, 0, 0, int(l1_time))
-            cleanup()
+            _cleanup_session()
             _active_cleanup = None
             continue
 
         # ── Level 2 ──────────────────────────────────────────────────────────
         show_level_banner(theme, 2, level["story_level_2"], level["commands_taught_l2"])
 
-        l2_result = _play_challenges(level["level_2_challenges"], sandbox_path, theme)
+        l2_result = _play_challenges(level["level_2_challenges"], sandbox_path, theme, task_map)
 
         if l2_result is None:
             _save_theme_result(player, theme, l1_score, l1_max, 0, 0, int(l1_time))
-            cleanup()
+            _cleanup_session()
             _active_cleanup = None
             continue
 
         l2_score, l2_max, l2_time = l2_result
 
+        # ── SO Bonus round ────────────────────────────────────────────────────
+        bonus_score = 0
+        try:
+            with console.status("[dim]Fetching a real challenge from StackOverflow...[/]"):
+                so_questions = fetch_shell_challenges(theme)
+        except NotImplementedError:
+            so_questions = None
+
+        if so_questions:
+            import random
+            q = random.choice(so_questions[:5])
+            console.print(f"\n[yellow]{'━' * 50}[/]")
+            console.print("[bold magenta]⭐ BONUS — Real question from StackOverflow[/]")
+            game_msg(f'"{q["title"]}"', theme.get("id", ""), style="bold")
+            game_msg(
+                f"Commands that might help: {', '.join(q['commands'][:4])}",
+                theme.get("id", ""), style="dim"
+            )
+            game_msg(
+                "Try to solve it in the sandbox. Type 'done' when finished or 'skip' to skip.",
+                theme.get("id", ""), style="dim"
+            )
+            while True:
+                try:
+                    user_input = console.input("[magenta]bonus:~$ [/]").strip()
+                except (EOFError, KeyboardInterrupt):
+                    break
+                if not user_input:
+                    continue
+                if user_input == "done":
+                    bonus_score = 10
+                    game_msg("Nice work! +10 bonus pts", theme.get("id", ""), style="green")
+                    break
+                elif user_input in ("skip", "quit"):
+                    game_msg("Skipped.", theme.get("id", ""), style="dim")
+                    break
+                elif user_input.startswith("cd"):
+                    args = user_input[2:].strip() or "~"
+                    cd_result = handle_cd(args, sandbox_path, sandbox_path)
+                    if cd_result["error"]:
+                        show_command_output("", cd_result["error"])
+                else:
+                    result = execute_command(user_input, sandbox_path, sandbox_path)
+                    show_command_output(result["stdout"], result["stderr"])
+
         # ── Final summary ─────────────────────────────────────────────────────
-        total_score = l1_score + l2_score
+        total_score = l1_score + l2_score + bonus_score
         total_max = l1_max + l2_max
         total_time = l1_time + l2_time
 
@@ -263,7 +322,7 @@ def main() -> None:
         _save_theme_result(
             player, theme, l1_score, l1_max, l2_score, l2_max, int(total_time), stars
         )
-        cleanup()
+        _cleanup_session()
         _active_cleanup = None
         time.sleep(1)
 
@@ -302,7 +361,7 @@ def _wikipedia_fallback(theme: dict) -> list[dict] | None:
 # Challenge loop
 # ---------------------------------------------------------------------------
 
-def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
+def _play_challenges(challenges: list, sandbox_path: str, theme: dict, task_map: dict = None):
     """Play through a list of challenges.
 
     Returns (score, max_score, elapsed_seconds) or None if the player quit.
@@ -344,13 +403,47 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
 
             # ── Meta-commands ─────────────────────────────────────────────
             if user_input == "hint":
-                try:
+                hint = None
+                # Resolve which file to pass to Box AI:
+                # L2 challenges carry hint_file; L1 use validation.target
+                hint_file_rel = (
+                    challenge.get("hint_file")
+                    or challenge.get("validation", {}).get("target", "")
+                )
+                if hint_file_rel:
+                    hint_file_abs = os.path.join(sandbox_path, hint_file_rel)
+                    if os.path.isfile(hint_file_abs):
+                        with console.status("[dim]Asking Box AI...[/]"):
+                            hint = fetch_ai_hint(challenge["hint_command"], hint_file_abs)
+                # Fall back to tldr
+                if not hint:
                     with console.status("[dim]Fetching hint...[/]"):
                         hint = fetch_hint(challenge["hint_command"])
-                except NotImplementedError:
-                    hint = f"Try the [bold]{challenge['hint_command']}[/bold] command"
                 game_msg(hint, theme.get("id", ""), style="yellow")
                 hint_used = True
+                continue
+
+            elif user_input == "leaderboard":
+                scores = get_leaderboard()
+                if not scores:
+                    game_msg("No scores yet — be the first to finish!", theme.get("id", ""), style="dim")
+                else:
+                    from rich.table import Table
+                    tbl = Table(title="Leaderboard", border_style=_style(theme.get("id",""))["color"])
+                    tbl.add_column("Player")
+                    tbl.add_column("Theme")
+                    tbl.add_column("Score", justify="right")
+                    tbl.add_column("Time")
+                    tbl.add_column("Stars")
+                    for s in scores[:10]:
+                        tbl.add_row(
+                            s.get("name", ""),
+                            s.get("theme_id", ""),
+                            str(s.get("score", 0)),
+                            _fmt_time(s.get("time_seconds", 0)),
+                            s.get("stars", ""),
+                        )
+                    console.print(tbl)
                 continue
 
             elif user_input == "skip":
@@ -396,6 +489,10 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
                     points_earned = int(points_earned * 0.8)
                 total_score += points_earned
                 show_challenge_success(challenge["success_message"], points_earned, theme.get("id", ""))
+                if task_map:
+                    task_info = task_map.get(challenge["id"], {})
+                    if task_info.get("task_id"):
+                        complete_challenge_task(task_info["task_id"])
                 break
 
         results.append(points_earned)
@@ -448,6 +545,21 @@ def _save_theme_result(
         console.print("[dim]Progress saved![/]")
     except NotImplementedError:
         console.print("[dim]Progress saved locally.[/]")
+
+    # Update shared leaderboard
+    total = l1_score + l2_score
+    with console.status("[dim]Updating leaderboard...[/]"):
+        update_leaderboard(player, theme["id"], total, total_time, stars)
+
+    # Generate completion certificate
+    with console.status("[dim]Generating certificate...[/]"):
+        cert_url = create_completion_certificate(
+            player, theme, l1_score, l1_max, l2_score, l2_max, total_time, stars
+        )
+    if cert_url:
+        game_msg(f"Your completion certificate:", style="cyan")
+        game_msg(cert_url, style="bold cyan")
+        game_msg("Share this link — anyone can view it, no login needed.", style="dim")
 
 
 def _fmt_time(seconds: float) -> str:

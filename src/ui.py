@@ -336,7 +336,7 @@ def show_prompt_reminder(theme_id: str) -> None:
     s = _style(theme_id)
     color = s["color"]
     console.print(
-        f"[dim]  [{color}]hint[/] · skip · status · quit[/]"
+        f"[dim]  [{color}]hint[/] · skip · status · leaderboard · quit[/]"
     )
 
 
