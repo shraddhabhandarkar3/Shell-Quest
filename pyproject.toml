@@ -1,0 +1,24 @@
+[project]
+name = "shellquest"
+version = "0.1.0"
+description = "A CLI game teaching shell commands through themed adventures built from live web content."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "boxsdk[jwt]",
+    "requests",
+    "questionary",
+    "rich",
+    "python-dotenv",
+    "pytest",
+]
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["src", "src.engine", "src.integrations"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

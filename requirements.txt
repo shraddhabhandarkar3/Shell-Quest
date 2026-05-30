@@ -1,0 +1,6 @@
+boxsdk[jwt]
+requests
+questionary
+rich
+python-dotenv
+pytest
