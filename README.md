@@ -2,7 +2,7 @@
 
 > A CLI game that drops you into a themed adventure built from live web content — and teaches you shell commands along the way.
 
-![ShellQuest gameplay](Screenshot%202026-05-30%20at%201.09.33%20PM.png)
+![ShellQuest gameplay](gameplay.png)
 
 Pick a theme. Apify scrapes the internet. A mystery appears in your terminal. You solve it with real bash.
 
