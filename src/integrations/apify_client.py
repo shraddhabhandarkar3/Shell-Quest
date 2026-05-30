@@ -49,6 +49,39 @@ _SHELL_COMMANDS = [
     "paste", "cp", "mv", "mkdir", "echo", "chmod",
 ]
 
+# Intent keywords → the teachable command they map to. Lets us tag a question
+# like "how to count lines in a file" with `wc` even though the title never
+# says "wc". A question that maps to at least one of these is "deterministic":
+# it has a concrete command answer we can author a checkable challenge around.
+_INTENT_COMMANDS = {
+    "count": "wc", "how many": "wc", "number of lines": "wc", "line count": "wc",
+    "search": "grep", "matching": "grep", "contains": "grep",
+    "pattern": "grep", "occurrences": "grep", "lines with": "grep",
+    "sort": "sort", "in order": "sort", "alphabetical": "sort",
+    "duplicate": "uniq", "unique": "uniq", "distinct": "uniq",
+    "column": "cut", "field": "cut", "nth": "cut", "delimiter": "cut",
+    "first": "head", "last": "tail", "top ": "head",
+    "replace": "tr", "translate": "tr",
+    "find files": "find", "locate": "find", "files named": "find",
+}
+
+
+def _match_commands(text_lower: str) -> list[str]:
+    """Best-effort: which teachable commands does this question involve?
+
+    Combines literal command mentions (e.g. the word "grep") with intent
+    keywords (e.g. "count" -> wc). Returns a de-duplicated, order-preserving
+    list restricted to commands the game teaches.
+    """
+    found = []
+    for cmd in _SHELL_COMMANDS:
+        if re.search(rf"\b{re.escape(cmd)}\b", text_lower):
+            found.append(cmd)
+    for keyword, cmd in _INTENT_COMMANDS.items():
+        if keyword in text_lower and cmd not in found:
+            found.append(cmd)
+    return found
+
 
 def _call_crawler(
     urls: list[str],
@@ -174,14 +207,23 @@ def fetch_shell_challenges(theme: dict) -> list[dict] | None:
     if not _apify_enabled:
         return None
 
-    url = "https://stackoverflow.com/questions/tagged/bash?tab=votes&pagesize=20"
+    # Target text-processing tags, not `bash` — the top `bash` questions are
+    # scripting-language syntax (string ops, redirection), whereas these tags
+    # surface the file/text-analysis questions the game actually teaches.
+    # The crawler takes all URLs in a single run (billed by page count).
+    urls = [
+        f"https://stackoverflow.com/questions/tagged/{tag}?tab=votes&pagesize=20"
+        for tag in ("text-processing", "grep", "awk")
+    ]
 
     try:
         # StackOverflow is bot-protected; cheerio handles its server-rendered
         # listing, but fall back to playwright if cheerio returns nothing.
-        items = _call_crawler([url], timeout=20)
-        if not items or not (items[0].get("text") or items[0].get("markdown")):
-            items = _call_crawler([url], timeout=30, crawler_type="playwright")
+        items = _call_crawler(urls, timeout=30)
+        if not items or not any(
+            it.get("text") or it.get("markdown") for it in items
+        ):
+            items = _call_crawler(urls, timeout=45, crawler_type="playwright")
     except Exception as e:
         console.print(f"[dim][Apify] Shell-challenge scrape failed ({e})[/]")
         return None
@@ -189,45 +231,53 @@ def fetch_shell_challenges(theme: dict) -> list[dict] | None:
     if not items:
         return None
 
-    text = items[0].get("text", "") or items[0].get("markdown", "") or ""
+    text = "\n".join(
+        (it.get("text", "") or it.get("markdown", "") or "") for it in items
+    )
 
     challenges = []
     seen = set()
     for line in text.split("\n"):
         line = line.strip()
-        # Heuristic: question titles are short actionable phrases.
+        # Strip SO moderation tags like " [closed]" / " [duplicate]".
+        line = re.sub(r"\s*\[(closed|duplicate|migrated)\]\s*$", "", line,
+                      flags=re.IGNORECASE).strip()
         lower = line.lower()
+        # Heuristic: question titles are short actionable phrases, not nav text
+        # or SO page chrome ("Highest scored 'grep' questions - Stack Overflow").
         looks_like_question = (
             20 < len(line) < 120
             and not line.startswith("http")
             and not line.startswith("[")
             and "vote" not in lower
             and "answer" not in lower
-            and (
-                line.endswith("?")
-                or any(lower.startswith(w) for w in (
-                    "how", "what", "find", "list", "count",
-                    "delete", "remove", "search", "why"))
-            )
+            and "stack overflow" not in lower
+            and "highest scored" not in lower
+            and "questions -" not in lower
         )
         if not looks_like_question or line in seen:
             continue
         seen.add(line)
 
-        commands = [c for c in _SHELL_COMMANDS
-                    if re.search(rf"\b{re.escape(c)}\b", lower)]
+        # Keep only questions with a concrete, teachable command answer —
+        # these are the "deterministic" ones we can build checkable challenges
+        # around. Conceptual/debugging questions map to nothing and are dropped.
+        commands = _match_commands(lower)
+        if not commands:
+            continue
+
         challenges.append({
             "title": line,
             "body": line,
             "commands": commands,
         })
-        if len(challenges) >= 10:
+        if len(challenges) >= 8:
             break
 
     if not challenges:
         return None
 
     console.print(
-        f"[dim][Apify] Found {len(challenges)} shell questions from "
-        f"StackOverflow[/]")
+        f"[dim][Apify] Found {len(challenges)} deterministic shell questions "
+        f"from StackOverflow[/]")
     return challenges
