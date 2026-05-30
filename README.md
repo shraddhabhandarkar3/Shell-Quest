@@ -4,6 +4,8 @@
 
 ![ShellQuest gameplay](gameplay.png)
 
+▶️ [Watch the demo](https://youtu.be/lZ_g8NAmh7E?si=Flnpo3BxYagaefDW)
+
 Pick a theme. Apify scrapes the internet. A mystery appears in your terminal. You solve it with real bash.
 
 ---
