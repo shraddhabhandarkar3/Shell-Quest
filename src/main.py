@@ -18,6 +18,15 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from src.ui import (
+    show_title, scraping_status,
+    show_level_banner, show_challenge_header,
+    show_challenge_success, show_level_complete,
+    show_completion, show_status_table, show_goodbye,
+    set_terminal_title, show_prompt_reminder,
+    game_msg, show_command_output, show_cd_result,
+)
+
 from src.engine.sandbox import create_sandbox, seed_sandbox
 from src.engine.runner import execute_command, handle_cd
 from src.engine.checker import validate_challenge
@@ -37,7 +46,7 @@ def fetch_github_profile(username: str) -> dict:
         resp = requests.get(
             f"https://api.github.com/users/{username}",
             headers={"User-Agent": "ShellQuest/1.0"},
-            timeout=5,
+            timeout=3,
         )
         if resp.status_code == 200:
             data = resp.json()
@@ -81,17 +90,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, _cleanup_and_exit)
     atexit.register(lambda: _active_cleanup() if _active_cleanup else None)
 
-    # Welcome banner
-    console.print(Panel(
-        "[bold cyan]SHELLQUEST[/]\n[dim]Learn the command line by doing[/]",
-        border_style="cyan",
-        padding=(1, 4),
-    ))
-    console.print(
-        "[dim]  Type real shell commands to solve challenges\n"
-        "  Type [cyan]hint[/] for help · [cyan]skip[/] to skip "
-        "· [cyan]status[/] for progress · [cyan]quit[/] to exit\n[/]"
-    )
+    show_title()
 
     # Init Box (graceful if not configured or not yet implemented)
     try:
@@ -123,18 +122,18 @@ def main() -> None:
 
     if github_user:
         try:
-            with console.status("[dim]Looking up your GitHub...[/]"):
+            with console.status("[dim]Looking up GitHub (3s max)...[/]"):
                 profile = fetch_github_profile(github_user)
             player["github_avatar"] = profile.get("avatar", "")
             player["github_bio"] = profile.get("bio", "")
             display = profile.get("name", name)
-            console.print(f"[dim]Welcome, {display}![/]")
+            game_msg(f"Welcome, {display}!", style="dim")
             if player["github_bio"]:
-                console.print(f'[dim]"{player["github_bio"]}"[/]')
+                game_msg(f'"{player["github_bio"]}"', style="dim")
         except NotImplementedError:
-            console.print(f"[dim]Welcome, {name}![/]")
+            game_msg(f"Welcome, {name}!", style="dim")
     else:
-        console.print(f"[dim]Welcome, {name}![/]")
+        game_msg(f"Welcome, {name}!", style="dim")
 
     # Try to load existing state (best-effort)
     try:
@@ -175,13 +174,14 @@ def main() -> None:
             theme_id = None
 
         if not theme_id or theme_id == "quit":
-            console.print("[dim]Thanks for playing![/]")
+            set_terminal_title("ShellQuest")
+            show_goodbye(name)
             break
 
         theme = next(t for t in themes if t["id"] == theme_id)
 
         # Scrape content (Apify → Wikipedia fallback handled inside)
-        with console.status(f"[cyan]Building your {theme['name']} adventure...[/]"):
+        with scraping_status(theme):
             try:
                 scraped = scrape_theme_content(theme)
             except NotImplementedError:
@@ -190,7 +190,7 @@ def main() -> None:
                 scraped = _wikipedia_fallback(theme)
 
         if not scraped:
-            console.print("[red]Couldn't build this theme. Try another.[/]")
+            game_msg("Couldn't build this theme. Try another.", style="red")
             continue
 
         level = build_level_from_theme(theme, scraped)
@@ -199,17 +199,14 @@ def main() -> None:
         try:
             sandbox_path, cleanup = create_sandbox()
         except Exception as e:
-            console.print(f"[red]Couldn't create sandbox: {e}[/]")
+            game_msg(f"Couldn't create sandbox: {e}", style="red")
             continue
 
         _active_cleanup = cleanup
         seed_sandbox(sandbox_path, level["files"])
 
         # ── Level 1 ──────────────────────────────────────────────────────────
-        console.print(f"\n[bold yellow]{level['title']}[/]")
-        console.print("[bold]Level 1: Exploration & Organization[/]")
-        console.print(f"[dim]{level['story_level_1']}[/]")
-        console.print("[cyan]Commands:[/] " + ", ".join(level["commands_taught_l1"]))
+        show_level_banner(theme, 1, level["story_level_1"], level["commands_taught_l1"])
 
         l1_result = _play_challenges(level["level_1_challenges"], sandbox_path, theme)
 
@@ -220,8 +217,7 @@ def main() -> None:
 
         l1_score, l1_max, l1_time = l1_result
 
-        console.print(f"\n[yellow]{'━' * 50}[/]")
-        console.print(f"[bold green]Level 1 Complete! Score: {l1_score}/{l1_max}[/]\n")
+        show_level_complete(1, l1_score, l1_max, theme["id"])
 
         try:
             proceed = questionary.confirm(
@@ -237,9 +233,7 @@ def main() -> None:
             continue
 
         # ── Level 2 ──────────────────────────────────────────────────────────
-        console.print("\n[bold]Level 2: Data Analysis[/]")
-        console.print(f"[dim]{level['story_level_2']}[/]")
-        console.print("[cyan]Commands:[/] " + ", ".join(level["commands_taught_l2"]))
+        show_level_banner(theme, 2, level["story_level_2"], level["commands_taught_l2"])
 
         l2_result = _play_challenges(level["level_2_challenges"], sandbox_path, theme)
 
@@ -256,22 +250,14 @@ def main() -> None:
         total_max = l1_max + l2_max
         total_time = l1_time + l2_time
 
-        console.print(f"\n[yellow]{'━' * 50}[/]")
-        console.print(f"[bold yellow]{theme['icon']} Adventure Complete![/]")
-        console.print(f"  Level 1: {l1_score}/{l1_max} pts")
-        console.print(f"  Level 2: {l2_score}/{l2_max} pts")
-        console.print(f"  Total:   {total_score}/{total_max} pts")
-        console.print(f"  Time:    {_fmt_time(total_time)}")
-
         if total_score >= total_max * 0.8:
             stars = "★★★"
-            console.print(f"\n[green]{stars} Excellent![/]")
         elif total_score >= total_max * 0.5:
             stars = "★★☆"
-            console.print(f"\n[yellow]{stars} Good job![/]")
         else:
             stars = "★☆☆"
-            console.print(f"\n[dim]{stars} Keep practicing![/]")
+
+        show_completion(theme, l1_score, l1_max, l2_score, l2_max, total_time, stars)
 
         _save_theme_result(
             player, theme, l1_score, l1_max, l2_score, l2_max, int(total_time), stars
@@ -327,12 +313,15 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
     results = []
 
     for i, challenge in enumerate(challenges):
-        console.print(f"\n[blue]{'━' * 50}[/]")
-        console.print(
-            f"[bold]Challenge {i + 1}/{len(challenges)}[/] "
-            f"[dim]({challenge['points']} pts)[/]"
+        set_terminal_title(
+            f"ShellQuest  |  {theme.get('name', '')}  |  "
+            f"Challenge {i + 1}/{len(challenges)}  |  {total_score} pts"
         )
-        console.print(challenge["instruction"])
+        show_challenge_header(
+            challenge, i, len(challenges), theme.get("id", ""),
+            points_so_far=total_score,
+            points_max=max_score,
+        )
 
         hint_used = False
         points_earned = 0
@@ -341,6 +330,7 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
         while True:
             rel = os.path.relpath(current_dir, sandbox_path)
             prompt_path = "~" if rel == "." else f"~/{rel}"
+            show_prompt_reminder(theme.get("id", ""))
 
             try:
                 user_input = console.input(f"[green]shellquest:{prompt_path}$ [/]")
@@ -356,30 +346,18 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
                 try:
                     with console.status("[dim]Fetching hint...[/]"):
                         hint = fetch_hint(challenge["hint_command"])
-                    console.print(hint)
                 except NotImplementedError:
-                    console.print(f"[yellow]Hint: try the [cyan]{challenge['hint_command']}[/cyan] command[/]")
+                    hint = f"Try the [bold]{challenge['hint_command']}[/bold] command"
+                game_msg(hint, theme.get("id", ""), style="yellow")
                 hint_used = True
                 continue
 
             elif user_input == "skip":
-                console.print("[yellow]Skipped.[/]")
+                game_msg("Skipped.", theme.get("id", ""), style="dim")
                 break
 
             elif user_input == "status":
-                tbl = Table(border_style="blue")
-                tbl.add_column("Challenge")
-                tbl.add_column("Status")
-                tbl.add_column("Points", justify="right")
-                for j, pts in enumerate(results):
-                    tbl.add_row(
-                        f"Challenge {j + 1}",
-                        "[green]✓[/]" if pts > 0 else "[red]✗[/]",
-                        str(pts),
-                    )
-                tbl.add_row(f"Challenge {i + 1}", "[yellow]...[/]", "—")
-                console.print(tbl)
-                console.print(f"[dim]Score so far: {total_score}[/]")
+                show_status_table(results, i, total_score, theme.get("id", ""))
                 continue
 
             elif user_input == "quit":
@@ -390,22 +368,17 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
                 args = user_input[2:].strip() or "~"
                 cd_result = handle_cd(args, current_dir, sandbox_path)
                 if cd_result["error"]:
-                    console.print(f"[red]{cd_result['error']}[/]")
+                    show_command_output("", cd_result["error"])
                 else:
                     current_dir = cd_result["new_dir"]
                     new_rel = os.path.relpath(current_dir, sandbox_path)
-                    console.print("[dim]" + ("~" if new_rel == "." else f"~/{new_rel}") + "[/]")
-                last_stdout = ""  # cd produces no stdout
+                    show_cd_result("~" if new_rel == "." else f"~/{new_rel}", theme.get("id", ""))
+                last_stdout = ""
 
             # ── Regular shell command ─────────────────────────────────────
             else:
                 result = execute_command(user_input, current_dir, sandbox_path)
-                if result["stdout"]:
-                    out = result["stdout"]
-                    console.print(out, end="" if out.endswith("\n") else "\n")
-                if result["stderr"]:
-                    err = result["stderr"]
-                    console.print(f"[red]{err}[/]", end="" if err.endswith("\n") else "\n")
+                show_command_output(result["stdout"], result["stderr"])
                 last_stdout = result["stdout"]
 
             # ── Validate after every command (including cd) ───────────────
@@ -421,9 +394,7 @@ def _play_challenges(challenges: list, sandbox_path: str, theme: dict):
                 if hint_used:
                     points_earned = int(points_earned * 0.8)
                 total_score += points_earned
-                console.print(f"[bold green]✓ {challenge['success_message']}[/]")
-                console.print(f"[green]+{points_earned} pts[/]")
-                time.sleep(0.3)
+                show_challenge_success(challenge["success_message"], points_earned, theme.get("id", ""))
                 break
 
         results.append(points_earned)
