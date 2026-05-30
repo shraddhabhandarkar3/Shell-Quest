@@ -30,7 +30,7 @@ from src.ui import (
 from src.engine.sandbox import create_sandbox, seed_sandbox
 from src.engine.runner import execute_command, handle_cd
 from src.engine.checker import validate_challenge
-from src.engine.theme_builder import build_level_from_theme
+from src.engine.theme_builder import build_level_from_theme, compute_challenge_answers
 from src.integrations.box_client import init_box, save_player_state, load_player_state
 from src.integrations.apify_client import scrape_theme_content
 
@@ -204,6 +204,7 @@ def main() -> None:
 
         _active_cleanup = cleanup
         seed_sandbox(sandbox_path, level["files"])
+        compute_challenge_answers(level["level_2_challenges"], sandbox_path)
 
         # ── Level 1 ──────────────────────────────────────────────────────────
         show_level_banner(theme, 1, level["story_level_1"], level["commands_taught_l1"])
